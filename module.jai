@@ -27,21 +27,22 @@ GLTF_Data :: struct {
   };
 }
 
-gltf_parse_string :: (gltf_buffer: string) -> GLTF_Data {
+gltf_parse_string :: (gltf_buffer: string) -> GLTF_Data, bool {
   data: GLTF_Data;
 
   data.allocator = context.allocator;
 
-  if gltf_buffer == "" then return data;
+  if gltf_buffer == "" then return data, false;
 
   if is_glb(gltf_buffer) {
-    return parse_glb_string(gltf_buffer);
+    gltf_data, ok := parse_glb_string(gltf_buffer);
+    return gltf_data, ok;
   }
 
   success, root := json_parse_string(gltf_buffer);
   defer json_free(root);
 
-  if !success then crash("JSON parsing failed.");
+  if !success then return data, false;
 
 
   //
@@ -273,7 +274,7 @@ gltf_parse_string :: (gltf_buffer: string) -> GLTF_Data {
       primitive.position_accessor   = get_int(attributes, "POSITION", -1);
       primitive.normal_accessor     = get_int(attributes, "NORMAL", -1);
       primitive.tangent_accessor    = get_int(attributes, "TANGENT", -1);
-      primitive.color_accessor      = get_int(attributes, "COLOR", -1);
+      primitive.color_accessor      = get_int(attributes, "COLOR_0", -1);
       primitive.joints_accessor     = get_int(attributes, "JOINTS_0", -1);
       primitive.weights_accessor    = get_int(attributes, "WEIGHTS_0", -1);
       primitive.texcoord_0_accessor = get_int(attributes, "TEXCOORD_0", -1);
@@ -594,26 +595,28 @@ gltf_parse_string :: (gltf_buffer: string) -> GLTF_Data {
     it.world_transform = get_world_transform(*data, it);
   }
 
-  return data;
+  return data, true;
 }
 
-gltf_parse_file :: (filepath: string) -> GLTF_Data {
+gltf_parse_file :: (filepath: string) -> GLTF_Data, bool {
   path, basename, extension := path_decomp(filepath);
 
   gltf_string, success := read_entire_file(filepath);
   defer free(gltf_string);
 
-  if !success {
-    crash("Reading % failed. Are you sure that your file exists?", filepath);
+  if !success then return .{}, false;
+
+  gltf_data: GLTF_Data = ---;
+  ok: bool = ---;
+
+  if extension == "glb" {
+    gltf_data, ok = parse_glb_string(gltf_string);
+  } else {
+    gltf_data, ok = gltf_parse_string(gltf_string);
   }
 
-  gltf_data := ifx extension == "glb"
-               then parse_glb_string(gltf_string)
-               else gltf_parse_string(gltf_string);
-
   gltf_data.filepath = copy_string(filepath);
-
-  return gltf_data;
+  return gltf_data, ok;
 }
 
 gltf_load_buffers :: (gltf_data: *GLTF_Data) -> bool {
@@ -1402,7 +1405,7 @@ is_glb :: (buffer: string) -> bool {
 
 // Documentation for parsing glTF binaries:
 // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#binary-gltf-layout
-parse_glb_string :: (glb_buffer: string) -> GLTF_Data {
+parse_glb_string :: (glb_buffer: string) -> GLTF_Data, bool {
   GLB_CHUNK_TYPE_JSON : u32 : 0x4E4F534A; // 'JSON' in ASCII.
   GLB_CHUNK_TYPE_BIN  : u32 : 0x004E4942; // 'BIN' in ASCII.
 
@@ -1414,11 +1417,13 @@ parse_glb_string :: (glb_buffer: string) -> GLTF_Data {
   length  := fields[2];
 
   if !is_glb(glb_buffer) {
-    crash("First 4-byte are not equal to magic number.");
+    log_error("First 4-byte are not equal to magic number.");
+    return .{}, false;
   }
 
   if version != 2 {
-    crash("Only glTF spec v2 is supported.");
+    log_error("Only glTF spec v2 is supported.");
+    return .{}, false;
   }
 
   /*
@@ -1441,7 +1446,8 @@ parse_glb_string :: (glb_buffer: string) -> GLTF_Data {
   // We first parse the JSON data:
 
   if fields[4] != GLB_CHUNK_TYPE_JSON {
-    crash("First chunk must be JSON data.");
+    log_error("First chunk must be JSON data.");
+    return .{}, false;
   }
 
   json_length := fields[3];
@@ -1456,7 +1462,8 @@ parse_glb_string :: (glb_buffer: string) -> GLTF_Data {
   bin_chunk  := cast(*u32) (json_string.data + json_string.count);
 
   if bin_chunk[1] != GLB_CHUNK_TYPE_BIN {
-    crash("Second chunk must be BIN data.");
+    log_error("Second chunk must be BIN data.");
+    return .{}, false;
   }
 
   bin_length       := bin_chunk[0];
@@ -1486,7 +1493,7 @@ parse_glb_string :: (glb_buffer: string) -> GLTF_Data {
     image.data = image_data;
   }
 
-  return gltf_data;
+  return gltf_data, true;
 }
 
 parse_texture_info :: (value: JSON_Value, key: string) -> GLTF_Texture_Info, bool {
@@ -1617,11 +1624,6 @@ get :: (json_val     : JSON_Value,
 
   assert(val.type == expected_type);
   return val, success;
-}
-
-crash :: (msg: string, args: ..Any) {
-  log_error(msg, args);
-  exit(-1);
 }
 
 #import "Basic";
